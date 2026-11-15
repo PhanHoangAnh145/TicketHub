@@ -1,0 +1,134 @@
+<!doctype html>
+<html lang="vi">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Flash-sale Lab wireframe</title>
+<style>
+  /* Intentionally rough: system fonts, gray borders, no color except the one signal that matters (oversold = marked X). */
+  * { box-sizing: border-box; }
+  body { font-family: system-ui, sans-serif; margin: 0; padding: 20px; background: #fff; color: #222; }
+  .frame { border: 2px dashed #999; padding: 16px; margin-bottom: 28px; border-radius: 6px; }
+  .label { font-size: 12px; color: #777; text-transform: uppercase; margin-bottom: 8px; }
+  h1 { font-size: 20px; margin: 0 0 4px; }
+  .sub { color: #666; margin: 0 0 16px; font-size: 14px; }
+  .row { display: flex; gap: 16px; flex-wrap: wrap; }
+  .box { border: 1px solid #aaa; padding: 12px; border-radius: 4px; }
+  .controls { flex: 0 0 280px; }
+  .stage { flex: 1 1 520px; }
+  .opt { display: block; border: 1px solid #bbb; padding: 8px; margin-bottom: 6px; border-radius: 4px; font-size: 14px; }
+  .opt.sel { border: 2px solid #222; }
+  .opt small { display: block; color: #777; }
+  .btn { display: block; width: 100%; padding: 12px; border: 2px solid #222; background: #eee; font-weight: 600; text-align: center; margin-top: 10px; border-radius: 4px; }
+  .btn.dis { color: #999; border-color: #bbb; }
+  .field { font-size: 13px; margin: 8px 0; }
+  .field span { display: inline-block; border-bottom: 1px solid #999; min-width: 60px; text-align: right; }
+  .stage-label { font-size: 11px; text-align: center; border: 1px solid #ccc; padding: 4px; margin-bottom: 8px; color: #777; }
+  .grid { display: grid; grid-template-columns: repeat(20, 1fr); gap: 3px; }
+  .s { aspect-ratio: 1; border: 1px solid #bbb; border-radius: 2px; }
+  .s.held { background: #ddd; }
+  .s.sold { background: #888; }
+  .s.dup { background: #222; position: relative; }
+  .s.dup::after { content: "×"; color: #fff; font-size: 10px; position: absolute; inset: 0; display: grid; place-items: center; }
+  .legend { font-size: 12px; color: #666; margin-top: 8px; display: flex; gap: 14px; flex-wrap: wrap; }
+  .legend i { display: inline-block; width: 10px; height: 10px; border: 1px solid #999; margin-right: 4px; vertical-align: middle; }
+  .stats { display: grid; grid-template-columns: repeat(4, 1fr); gap: 8px; margin-top: 12px; }
+  .stat { border: 1px solid #aaa; padding: 8px; border-radius: 4px; }
+  .stat b { display: block; font-size: 22px; }
+  .stat small { color: #777; font-size: 12px; }
+  .stat.bad { border: 2px solid #222; }
+  .progress { height: 8px; border: 1px solid #999; margin-top: 10px; }
+  .progress div { height: 100%; width: 62%; background: #aaa; }
+  table { width: 100%; border-collapse: collapse; font-size: 13px; }
+  th, td { border: 1px solid #bbb; padding: 6px 8px; text-align: right; }
+  th:first-child, td:first-child { text-align: left; }
+  td.bad { font-weight: 700; text-decoration: underline; }
+  .note { font-size: 12px; color: #777; margin-top: 8px; }
+</style>
+</head>
+<body>
+
+<!-- STATE 1: running. Hierarchy: (1) seat map changing live, (2) the 4 counters, (3) controls. Controls sit left so the map gets the width. -->
+<div class="frame">
+  <div class="label">Trạng thái 1: đang chạy (chiến lược "Không khóa")</div>
+  <h1>Flash-sale Lab</h1>
+  <p class="sub">200 ghế · 5.000 bot · cùng đặt một lúc. Chọn chiến lược, bấm chạy, xem điều gì xảy ra.</p>
+  <div class="row">
+    <div class="box controls">
+      <div class="label">Chiến lược</div>
+      <!-- Naive first and selected by default: the first thing a visitor sees is the bug. That is the hook. -->
+      <label class="opt sel">● Không khóa<small>đọc rồi ghi, có race condition</small></label>
+      <label class="opt">○ Khóa bi quan<small>SELECT ... FOR UPDATE</small></label>
+      <label class="opt">○ Khóa lạc quan + retry<small>cột @Version, thử lại có backoff</small></label>
+      <label class="opt">○ Redis giữ ghế + DB constraint<small>SET NX EX, unique(seat_id)</small></label>
+      <div class="field">Số bot: <span>5.000</span> (tối đa 5.000)</div>
+      <div class="field">Số ghế: <span>200</span></div>
+      <!-- Disabled while a run is in progress; one run at a time across the whole deployment (free-tier guard). -->
+      <div class="btn dis">Đang chạy… 3,1 giây</div>
+      <div class="progress"><div></div></div>
+      <div class="note">Mỗi lượt dùng một sự kiện demo riêng, tự reset. Chỉ một lượt chạy cùng lúc.</div>
+    </div>
+    <div class="box stage">
+      <div class="stage-label">SÂN KHẤU</div>
+      <!-- 20x10 = 200 seats. Updated via SSE ~10 times/second, batched; not one event per seat. -->
+      <div class="grid" id="g"></div>
+      <div class="legend">
+        <span><i></i>trống</span><span><i style="background:#ddd"></i>đang giữ</span>
+        <span><i style="background:#888"></i>đã bán</span><span><i style="background:#222"></i>BÁN TRÙNG</span>
+      </div>
+      <!-- Four numbers only. Oversold is the hero metric; Unsold catches optimistic-without-retry. -->
+      <div class="stats">
+        <div class="stat bad"><b>37</b><small>vé bán trùng</small></div>
+        <div class="stat"><b>12</b><small>ghế còn sót</small></div>
+        <div class="stat"><b>1.840/s</b><small>thông lượng</small></div>
+        <div class="stat"><b>212 ms</b><small>độ trễ p99</small></div>
+      </div>
+    </div>
+  </div>
+</div>
+
+<!-- STATE 2: comparison after several runs. This table is the interview artifact; also exported to README by CI. -->
+<div class="frame">
+  <div class="label">Trạng thái 2: so sánh sau nhiều lượt chạy</div>
+  <table>
+    <tr><th>Chiến lược</th><th>Bán trùng</th><th>Ghế sót</th><th>Thông lượng</th><th>p99</th><th>Lượt</th></tr>
+    <tr><td>Không khóa</td><td class="bad">37</td><td>0</td><td>1.840/s</td><td>212 ms</td><td>#41</td></tr>
+    <tr><td>Khóa bi quan</td><td>0</td><td>0</td><td>610/s</td><td>1.380 ms</td><td>#42</td></tr>
+    <tr><td>Khóa lạc quan (không retry)</td><td>0</td><td class="bad">58</td><td>1.320/s</td><td>340 ms</td><td>#43</td></tr>
+    <tr><td>Khóa lạc quan + retry</td><td>0</td><td>0</td><td>1.150/s</td><td>520 ms</td><td>#44</td></tr>
+    <tr><td>Redis + DB constraint</td><td>0</td><td>0</td><td>2.900/s</td><td>95 ms</td><td>#45</td></tr>
+  </table>
+  <div class="note">Số liệu minh họa. Số thật phụ thuộc máy chủ; ghi rõ cấu hình máy bên dưới bảng.</div>
+</div>
+
+<!-- STATE 3: edge states. Busy (someone else running), error (DB down). Empty state = no runs yet, shows a one-line prompt. -->
+<div class="frame">
+  <div class="label">Trạng thái 3: các trường hợp biên</div>
+  <div class="row">
+    <div class="box" style="flex:1">
+      <b>Có người khác đang chạy</b>
+      <p class="note">Lượt #46 đang chạy, còn ~4 giây. Bạn xem trực tiếp lượt đó, hoặc chờ để chạy lượt của mình.</p>
+    </div>
+    <div class="box" style="flex:1">
+      <b>Chưa có lượt nào</b>
+      <p class="note">Bắt đầu với "Không khóa" để xem lỗi bán trùng trông như thế nào.</p>
+    </div>
+    <div class="box" style="flex:1">
+      <b>Lỗi</b>
+      <p class="note">Lượt chạy bị dừng: mất kết nối Redis. Không có dữ liệu nào bị ghi sai. Thử lại.</p>
+    </div>
+  </div>
+</div>
+
+<script>
+  // Static fill for the sketch only.
+  const g = document.getElementById('g');
+  for (let i = 0; i < 200; i++) {
+    const d = document.createElement('div');
+    const r = (i * 37) % 100;
+    d.className = 's' + (r < 55 ? ' sold' : r < 70 ? ' held' : '') + ([7, 23, 58, 91, 140, 166].includes(i) ? ' dup' : '');
+    g.appendChild(d);
+  }
+</script>
+</body>
+</html>
